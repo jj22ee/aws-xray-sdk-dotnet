@@ -1,5 +1,3 @@
-#pragma warning disable CS1587 // XML comment is not placed on a valid language element
-
 #region Header
 /**
  * JsonException.cs
@@ -10,11 +8,18 @@
  **/
 #endregion
 
+
 using System;
 
-namespace ThirdParty.LitJson
+
+namespace LitJson
 {
-    public class JsonException : ApplicationException
+    public class JsonException :
+#if NETSTANDARD1_5
+        Exception
+#else
+        ApplicationException
+#endif
     {
         public JsonException () : base ()
         {

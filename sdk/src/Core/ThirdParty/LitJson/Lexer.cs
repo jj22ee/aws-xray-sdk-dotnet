@@ -1,5 +1,3 @@
-#pragma warning disable CS1587 // XML comment is not placed on a valid language element
-
 #region Header
 /**
  * Lexer.cs
@@ -10,11 +8,14 @@
  **/
 #endregion
 
+
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-namespace ThirdParty.LitJson
+
+namespace LitJson
 {
     internal class FsmContext
     {
@@ -30,8 +31,8 @@ namespace ThirdParty.LitJson
         #region Fields
         private delegate bool StateHandler (FsmContext ctx);
 
-        private static int[]          fsm_return_table;
-        private static StateHandler[] fsm_handler_table;
+        private static readonly int[]          fsm_return_table;
+        private static readonly StateHandler[] fsm_handler_table;
 
         private bool          allow_comments;
         private bool          allow_single_quoted_strings;
@@ -76,7 +77,7 @@ namespace ThirdParty.LitJson
         #region Constructors
         static Lexer ()
         {
-            PopulateFsmTables ();
+            PopulateFsmTables (out fsm_handler_table, out fsm_return_table);
         }
 
         public Lexer (TextReader reader)
@@ -129,7 +130,7 @@ namespace ThirdParty.LitJson
             }
         }
 
-        private static void PopulateFsmTables ()
+        private static void PopulateFsmTables (out StateHandler[] fsm_handler_table, out int[] fsm_return_table)
         {
             // See section A.1. of the manual for details of the finite
             // state machine.

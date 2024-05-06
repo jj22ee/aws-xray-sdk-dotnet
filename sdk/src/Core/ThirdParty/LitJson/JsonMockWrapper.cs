@@ -1,5 +1,3 @@
-#pragma warning disable CS1587 // XML comment is not placed on a valid language element
-
 #region Header
 /**
  * JsonMockWrapper.cs
@@ -11,11 +9,13 @@
  **/
 #endregion
 
+
 using System;
 using System.Collections;
 using System.Collections.Specialized;
 
-namespace ThirdParty.LitJson
+
+namespace LitJson
 {
     public class JsonMockWrapper : IJsonWrapper
     {

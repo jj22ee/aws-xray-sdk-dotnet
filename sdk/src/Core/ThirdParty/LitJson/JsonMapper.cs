@@ -1,5 +1,3 @@
-#pragma warning disable CS1587 // XML comment is not placed on a valid language element
-
 #region Header
 /**
  * JsonMapper.cs
@@ -10,15 +8,16 @@
  **/
 #endregion
 
+
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
-using Amazon.XRay.Recorder.Core.Internal.Utils;
 
-namespace ThirdParty.LitJson
+
+namespace LitJson
 {
     internal struct PropertyMetadata
     {
@@ -101,33 +100,35 @@ namespace ThirdParty.LitJson
     public class JsonMapper
     {
         #region Fields
-        private static int max_nesting_depth;
+        private static readonly int max_nesting_depth;
 
-        private static IFormatProvider datetime_format;
+        private static readonly IFormatProvider datetime_format;
 
-        private static IDictionary<Type, ExporterFunc> base_exporters_table;
-        private static IDictionary<Type, ExporterFunc> custom_exporters_table;
+        private static readonly IDictionary<Type, ExporterFunc> base_exporters_table;
+        private static readonly IDictionary<Type, ExporterFunc> custom_exporters_table;
+        private static readonly object custom_exporters_table_lock = new Object();
 
-        private static IDictionary<Type,
+        private static readonly IDictionary<Type,
                 IDictionary<Type, ImporterFunc>> base_importers_table;
-        private static IDictionary<Type,
+        private static readonly IDictionary<Type,
                 IDictionary<Type, ImporterFunc>> custom_importers_table;
+        private static readonly object custom_importers_table_lock = new Object();
 
-        private static IDictionary<Type, ArrayMetadata> array_metadata;
+        private static readonly IDictionary<Type, ArrayMetadata> array_metadata;
         private static readonly object array_metadata_lock = new Object ();
 
-        private static IDictionary<Type,
+        private static readonly IDictionary<Type,
                 IDictionary<Type, MethodInfo>> conv_ops;
         private static readonly object conv_ops_lock = new Object ();
 
-        private static IDictionary<Type, ObjectMetadata> object_metadata;
+        private static readonly IDictionary<Type, ObjectMetadata> object_metadata;
         private static readonly object object_metadata_lock = new Object ();
 
-        private static IDictionary<Type,
+        private static readonly IDictionary<Type,
                 IList<PropertyMetadata>> type_properties;
         private static readonly object type_properties_lock = new Object ();
 
-        private static JsonWriter      static_writer;
+        private static readonly JsonWriter      static_writer;
         private static readonly object static_writer_lock = new Object ();
         #endregion
 
@@ -225,8 +226,7 @@ namespace ThirdParty.LitJson
                 p_data.Info = p_info;
                 p_data.Type = p_info.PropertyType;
 
-                // Convert property name from CamelCase to snake_case, because the json configure file is use snake case.
-                data.Properties.Add(p_info.Name.FromCamelCaseToSnakeCase(), p_data);
+                data.Properties.Add (p_info.Name, p_data);
             }
 
             foreach (FieldInfo f_info in type.GetFields ()) {
@@ -316,9 +316,15 @@ namespace ThirdParty.LitJson
             Type value_type = underlying_type ?? inst_type;
 
             if (reader.Token == JsonToken.Null) {
+                #if NETSTANDARD1_5
+                if (inst_type.IsClass() || underlying_type != null) {
+                    return null;
+                }
+                #else
                 if (inst_type.IsClass || underlying_type != null) {
                     return null;
                 }
+                #endif
 
                 throw new JsonException (String.Format (
                             "Can't assign null to an instance of type {0}",
@@ -337,31 +343,29 @@ namespace ThirdParty.LitJson
                     return reader.Value;
 
                 // If there's a custom importer that fits, use it
-                if (custom_importers_table.ContainsKey (json_type) &&
-                    custom_importers_table[json_type].ContainsKey (
-                        value_type)) {
+                lock (custom_importers_table_lock) {
+                    if (custom_importers_table.TryGetValue(json_type, out IDictionary<Type, ImporterFunc> customImporterTablesValue) &&
+                        customImporterTablesValue.TryGetValue(value_type, out ImporterFunc customImporter)) {
 
-                    ImporterFunc importer =
-                        custom_importers_table[json_type][value_type];
-
-                    return importer (reader.Value);
+                        return customImporter(reader.Value);
+                    }
                 }
 
                 // Maybe there's a base importer that works
-                if (base_importers_table.ContainsKey (json_type) &&
-                    base_importers_table[json_type].ContainsKey (
-                        value_type)) {
+                if (base_importers_table.TryGetValue(json_type, out IDictionary<Type, ImporterFunc> baseImporterTablesValue) &&
+                    baseImporterTablesValue.TryGetValue(value_type, out ImporterFunc baseImporter)) {
 
-                    ImporterFunc importer =
-                        base_importers_table[json_type][value_type];
-
-                    return importer (reader.Value);
+                    return baseImporter(reader.Value);
                 }
 
                 // Maybe it's an enum
+                #if NETSTANDARD1_5
+                if (value_type.IsEnum())
+                    return Enum.ToObject (value_type, reader.Value);
+                #else
                 if (value_type.IsEnum)
                     return Enum.ToObject (value_type, reader.Value);
-
+                #endif
                 // Try using an implicit conversion operator
                 MethodInfo conv_op = GetConvOp (value_type, json_type);
 
@@ -397,6 +401,8 @@ namespace ThirdParty.LitJson
                     list = new ArrayList ();
                     elem_type = inst_type.GetElementType ();
                 }
+
+                list.Clear();
 
                 while (true) {
                     object item = ReadValue (elem_type, reader);
@@ -550,6 +556,8 @@ namespace ThirdParty.LitJson
 
         private static void RegisterBaseExporters ()
         {
+            // This method is only called from the static initializer,
+            // so there is no need to explicitly lock any static members here
             base_exporters_table[typeof (byte)] =
                 delegate (object obj, JsonWriter writer) {
                     writer.Write (Convert.ToInt32 ((byte) obj));
@@ -595,10 +603,17 @@ namespace ThirdParty.LitJson
                 delegate (object obj, JsonWriter writer) {
                     writer.Write ((ulong) obj);
                 };
+
+            base_exporters_table[typeof(DateTimeOffset)] =
+                delegate (object obj, JsonWriter writer) {
+                    writer.Write(((DateTimeOffset)obj).ToString("yyyy-MM-ddTHH:mm:ss.fffffffzzz", datetime_format));
+                };
         }
 
         private static void RegisterBaseImporters ()
         {
+            // This method is only called from the static initializer,
+            // so there is no need to explicitly lock any static members here
             ImporterFunc importer;
 
             importer = delegate (object input) {
@@ -612,6 +627,12 @@ namespace ThirdParty.LitJson
             };
             RegisterImporter (base_importers_table, typeof (int),
                               typeof (ulong), importer);
+
+            importer = delegate (object input) {
+                return Convert.ToInt64((int)input);
+            };
+            RegisterImporter(base_importers_table, typeof(int),
+                              typeof(long), importer);
 
             importer = delegate (object input) {
                 return Convert.ToSByte ((int) input);
@@ -655,6 +676,11 @@ namespace ThirdParty.LitJson
             RegisterImporter (base_importers_table, typeof (double),
                               typeof (decimal), importer);
 
+            importer = delegate (object input) {
+                return Convert.ToSingle((double)input);
+            };
+            RegisterImporter(base_importers_table, typeof(double),
+                typeof(float), importer);
 
             importer = delegate (object input) {
                 return Convert.ToUInt32 ((long) input);
@@ -673,16 +699,22 @@ namespace ThirdParty.LitJson
             };
             RegisterImporter (base_importers_table, typeof (string),
                               typeof (DateTime), importer);
+
+            importer = delegate (object input) {
+                return DateTimeOffset.Parse((string)input, datetime_format);
+            };
+            RegisterImporter(base_importers_table, typeof(string),
+                typeof(DateTimeOffset), importer);
         }
 
         private static void RegisterImporter (
             IDictionary<Type, IDictionary<Type, ImporterFunc>> table,
-            Type json_type, Type valueType, ImporterFunc importer)
+            Type json_type, Type value_type, ImporterFunc importer)
         {
             if (! table.ContainsKey (json_type))
                 table.Add (json_type, new Dictionary<Type, ImporterFunc> ());
 
-            table[json_type][valueType] = importer;
+            table[json_type][value_type] = importer;
         }
 
         private static void WriteValue (object obj, JsonWriter writer,
@@ -719,6 +751,12 @@ namespace ThirdParty.LitJson
                 return;
             }
 
+            if (obj is Single)
+            {
+                writer.Write((float)obj);
+                return;
+            }
+
             if (obj is Int32) {
                 writer.Write ((int) obj);
                 return;
@@ -731,12 +769,6 @@ namespace ThirdParty.LitJson
 
             if (obj is Int64) {
                 writer.Write ((long) obj);
-                return;
-            }
-
-            if (obj is Guid)
-            {
-                writer.Write(obj.ToString());
                 return;
             }
 
@@ -760,10 +792,13 @@ namespace ThirdParty.LitJson
                 return;
             }
 
-            if (obj is IDictionary) {
+            if (obj is IDictionary dictionary) {
                 writer.WriteObjectStart ();
-                foreach (DictionaryEntry entry in (IDictionary) obj) {
-                    writer.WritePropertyName ((string) entry.Key);
+                foreach (DictionaryEntry entry in dictionary) {
+                    var propertyName = entry.Key is string key ?
+                        key
+                        : Convert.ToString(entry.Key, CultureInfo.InvariantCulture);
+                    writer.WritePropertyName (propertyName);
                     WriteValue (entry.Value, writer, writer_is_private,
                                 depth + 1);
                 }
@@ -775,29 +810,17 @@ namespace ThirdParty.LitJson
             Type obj_type = obj.GetType ();
 
             // See if there's a custom exporter for the object
-            if (custom_exporters_table.ContainsKey (obj_type)) {
-                ExporterFunc exporter = custom_exporters_table[obj_type];
-                exporter (obj, writer);
-
-                return;
-            }
-
-            // See if there's a custom exporter for the base class of the object
-            foreach (var type in custom_exporters_table.Keys)
-            {
-                if (obj_type.IsSubclassOf(type))
-                {
-                    ExporterFunc exporter = custom_exporters_table[type];
-                    exporter(obj, writer);
+            lock (custom_exporters_table_lock) {
+                if (custom_exporters_table.TryGetValue(obj_type, out ExporterFunc customExporter)) {
+                    customExporter(obj, writer);
 
                     return;
                 }
             }
 
             // If not, maybe there's a base exporter
-            if (base_exporters_table.ContainsKey (obj_type)) {
-                ExporterFunc exporter = base_exporters_table[obj_type];
-                exporter (obj, writer);
+            if (base_exporters_table.TryGetValue(obj_type, out ExporterFunc baseExporter)) {
+                baseExporter(obj, writer);
 
                 return;
             }
@@ -806,10 +829,20 @@ namespace ThirdParty.LitJson
             if (obj is Enum) {
                 Type e_type = Enum.GetUnderlyingType (obj_type);
 
-                if (e_type == typeof (long)
-                    || e_type == typeof (uint)
-                    || e_type == typeof (ulong))
+                if (e_type == typeof (long))
+                    writer.Write ((long) obj);
+                else if (e_type == typeof (uint))
+                    writer.Write ((uint) obj);
+                else if (e_type == typeof (ulong))
                     writer.Write ((ulong) obj);
+                else if (e_type == typeof(ushort))
+                    writer.Write ((ushort)obj);
+                else if (e_type == typeof(short))
+                    writer.Write ((short)obj);
+                else if (e_type == typeof(byte))
+                    writer.Write ((byte)obj);
+                else if (e_type == typeof(sbyte))
+                    writer.Write ((sbyte)obj);
                 else
                     writer.Write ((int) obj);
 
@@ -898,6 +931,13 @@ namespace ThirdParty.LitJson
             return (T) ReadValue (typeof (T), reader);
         }
 
+        public static object ToObject(string json, Type ConvertType )
+        {
+            JsonReader reader = new JsonReader(json);
+
+            return ReadValue(ConvertType, reader);
+        }
+
         public static IJsonWrapper ToWrapper (WrapperFactory factory,
                                               JsonReader reader)
         {
@@ -919,7 +959,9 @@ namespace ThirdParty.LitJson
                     exporter ((T) obj, writer);
                 };
 
-            custom_exporters_table[typeof (T)] = exporter_wrapper;
+            lock (custom_exporters_table_lock) { 
+                custom_exporters_table[typeof (T)] = exporter_wrapper;
+            }
         }
 
         public static void RegisterImporter<TJson, TValue> (
@@ -930,18 +972,24 @@ namespace ThirdParty.LitJson
                     return importer ((TJson) input);
                 };
 
-            RegisterImporter (custom_importers_table, typeof (TJson),
-                              typeof (TValue), importer_wrapper);
+            lock (custom_importers_table_lock) {
+                RegisterImporter (custom_importers_table, typeof (TJson),
+                                 typeof (TValue), importer_wrapper);
+            }
         }
 
         public static void UnregisterExporters ()
         {
-            custom_exporters_table.Clear ();
+            lock (custom_exporters_table_lock) {
+                custom_exporters_table.Clear();
+            }
         }
 
         public static void UnregisterImporters ()
         {
-            custom_importers_table.Clear ();
+            lock (custom_importers_table_lock) {
+                custom_importers_table.Clear();
+            }
         }
     }
 }
