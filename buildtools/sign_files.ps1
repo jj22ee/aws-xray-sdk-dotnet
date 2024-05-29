@@ -26,31 +26,31 @@ Param
 Begin
 {
     $ErrorActionPreference = "Stop"
-    $unsignedS3bucket = $Env:UNSIGNED_BUCKET
+    # $unsignedS3bucket = $Env:UNSIGNED_BUCKET
     $signedS3bucket = $Env:SIGNED_BUCKET
 
     $FilesToSign = @()
 
-    if ($PSCmdlet.ParameterSetName -eq "Files")
-    {
-        $FilesToSign = $Files
-    }
-    else
-    {
-        if ($Recurse)
-        {
-            $FilesToSign = Get-ChildItem -Path $Path -Include $Filters -File -Recurse | Select-Object -ExpandProperty FullName
-        }
-        else 
-        {
-            $FilesToSign = Get-ChildItem -Path $Path\* -Include $Filters -File | Select-Object -ExpandProperty FullName
-        }
-    }
+    # if ($PSCmdlet.ParameterSetName -eq "Files")
+    # {
+    #     $FilesToSign = $Files
+    # }
+    # else
+    # {
+    #     if ($Recurse)
+    #     {
+    #         $FilesToSign = Get-ChildItem -Path $Path -Include $Filters -File -Recurse | Select-Object -ExpandProperty FullName
+    #     }
+    #     else 
+    #     {
+    #         $FilesToSign = Get-ChildItem -Path $Path\* -Include $Filters -File | Select-Object -ExpandProperty FullName
+    #     }
+    # }
 
-    if ($FilesToSign.Count -eq 0) 
-    { 
-        return "Nothing to sign" 
-    }
+    # if ($FilesToSign.Count -eq 0) 
+    # { 
+    #     return "Nothing to sign" 
+    # }
 
     filter ValidateJob()
     {
@@ -68,35 +68,37 @@ Begin
         param($file)
 
         $key = Split-Path $file -leaf
-        $key = "XRayDotNetSignerProfile/AuthenticodeSigner-SHA256-RSA/$key"
+        $key = "index.js"
         $retryCount = 0
         $maxRetryCount = 10
 
         Write-Host "Signing File: ", $file
-        do {
-            $versionId = aws s3api put-object --bucket $unsignedS3bucket --key $key --body $file --query VersionId --acl bucket-owner-full-control
-            $retryCount++
-        } while ($LASTEXITCODE -ne 0 -and $retryCount -le $maxRetryCount)
+        # do {
+        #     $versionId = aws s3api put-object --bucket $unsignedS3bucket --key $key --body $file --query VersionId --acl bucket-owner-full-control
+        #     $retryCount++
+        # } while ($LASTEXITCODE -ne 0 -and $retryCount -le $maxRetryCount)
 
-        if ($LASTEXITCODE -ne 0)
-        {
-           throw "Upload failed for: $file Reason: " + $Error[0].Exception.Message
-        }
+        # if ($LASTEXITCODE -ne 0)
+        # {
+        #    throw "Upload failed for: $file Reason: " + $Error[0].Exception.Message
+        # }
 
-        $retryCount = 0        
-        do {
-            $jobId = aws s3api get-object-tagging --bucket $unsignedS3bucket --key $key --version-id $versionId --query 'TagSet[?Key==`signer-job-id`].Value | [0]'
-            $retryCount++
-        } while ($jobId -eq "null" -and $retryCount -le $maxRetryCount)
+        # $retryCount = 0        
+        # do {
+        #     $jobId = aws s3api get-object-tagging --bucket $unsignedS3bucket --key $key --version-id $versionId --query 'TagSet[?Key==`signer-job-id`].Value | [0]'
+        #     $retryCount++
+        # } while ($jobId -eq "null" -and $retryCount -le $maxRetryCount)
 
-        if ($jobId -eq "null")
-        {
-           throw "Exceeded retries to check if the object has finished signing for: $file"
-        }
+        # if ($jobId -eq "null")
+        # {
+        #    throw "Exceeded retries to check if the object has finished signing for: $file"
+        # }
 
         $retryCount = 0
         do {
-            aws s3api get-object --bucket $signedS3bucket --key $key-$jobId $file
+            Write-Host "aws s3api get-object --bucket $signedS3bucket --key $file $file" 
+            Write-Host "retryCount: $retryCount"
+            aws s3api get-object --bucket $signedS3bucket --key $file $file
             $retryCount++
         } while ($LASTEXITCODE -ne 0 -and $retryCount -le $maxRetryCount)
         
@@ -110,10 +112,12 @@ Begin
 
     Write-Host "Signing", $FilesToSign.Count, "file(s)..."
     
-    foreach ($file in $FilesToSign)
-    {  
-        $null = Invoke-Command -ScriptBlock $signFile -ArgumentList $file
-    }
+    # foreach ($file in $FilesToSign)
+    # {  
+    $null = Invoke-Command -ScriptBlock $signFile -ArgumentList "index.js"
+    $null = Invoke-Command -ScriptBlock $signFile -ArgumentList "package.json"
+    $null = Invoke-Command -ScriptBlock $signFile -ArgumentList "package-lock.json"
+    # }
 
     Get-Job | Wait-Job | ValidateJob
 
